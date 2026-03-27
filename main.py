@@ -115,6 +115,15 @@ def main(dist: np.array, node_params: np.array, time_window: float, num_days: in
     Note that another variant of this problem might model a bust. I.e. you are caught and have to pay a fine. A bust
     would also end the route.
 
+    Another variant could incorporate other features to condition EV on, thus contextual bandits problem now.
+    For example:
+    - each run has fixed context like time of day
+    - each node has fixed context like foot-traffic
+    - dynamic context that changes within the run (now RL?)
+
+    First two points above (even combined) still in contextual bandits setting.
+    Third point starts to tap into RL (state = node + current_context which depends on previous actions).
+
     :param dist: adjacency matrix of graph
     :param node_params: true parameters of node distributions (using poisson distribution => just lambdas)
     :param time_window: max time of a route
@@ -227,12 +236,36 @@ class RouteLearner:
             beta += 1
             self.lambs_posterior_params[node] = (alpha, beta)
 
+    def optimal_route(self, num_samples=1, epsilon=0.0):
+        assert num_samples > 0
+
+        optimal_route = None
+        opt_ret = -1
+        for i in range(num_samples):
+            sample_route, ev_ret = greedy_solver(
+                self.dist, self.true_lambdas, start=self.start, time_window=self.time_window, epsilon=epsilon
+            )
+            if ev_ret > opt_ret:
+                optimal_route = sample_route
+                opt_ret = ev_ret
+
+        return optimal_route, opt_ret
+
     def ev_route(self):
-        return greedy_solver(self.dist, self.true_lambdas, start=self.start, time_window=self.time_window)
+        ev_route, ev_ret = greedy_solver(
+            self.dist, self.ev_estimate(), start=self.start, time_window=self.time_window
+        )
+        return ev_route, ev_ret
 
     def ev_estimate(self) -> np.array:
         """Returns the current estimates of the lambdas of each node"""
         return np.array([alpha / beta for alpha, beta in self.lambs_posterior_params])
+
+    def route_time(self, route: Union[np.array, list[int]]):
+        return sum(self.dist[u, v] for u, v in zip(route[:-1], route[1:]))
+
+    def route_ev_return(self, route: Union[np.array, list[int]]):
+        return sum(self.true_lambdas[node] for node in route)
 
 
 if __name__ == "__main__":
