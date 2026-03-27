@@ -2,10 +2,8 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from numpy.random import gamma, poisson
 import random
-from typing import Optional
-
-np.random.seed(9582735)
-random.seed(43875634)
+from typing import Optional, Union
+from matplotlib import pyplot as plt
 
 
 def random_graph(num_nodes: int, maxx: float = 10) -> np.array:
@@ -17,6 +15,7 @@ def random_graph(num_nodes: int, maxx: float = 10) -> np.array:
     :return:
     """
     points = np.random.rand(num_nodes, 2)*maxx  # 2d points uniformly distributed in [0, maxx)
+    print(points)
     euclids = pdist(points)  # calculates pairwise distances of each point
     return squareform(euclids)
 
@@ -154,7 +153,92 @@ def main(dist: np.array, node_params: np.array, time_window: float, num_days: in
     return est_post_params, route_days, params_days
 
 
+class RouteLearner:
+    """
+    Essentially the same as above but easier to track intermediate values, e.g. for visualization.
+    """
+
+    def __init__(self, points: np.array, true_lambdas: np.array, time_window: float):
+        """
+
+        :param points: num_points x dim array
+        :param true_lambdas:
+        :param time_window:
+        """
+        self.points = points
+        self.num_points = points.shape[0]
+        self.dist = squareform(pdist(points))  # calculates pairwise distances of each point
+        self.true_lambdas: np.array = np.array(true_lambdas) if isinstance(true_lambdas, list) else true_lambdas
+        self.lambs_posterior_params: list[tuple[float, float]] = []
+
+        self.time_window = time_window
+        self.start = 0
+
+    def init_priors(self, priors: Optional[Union[tuple[float, float], list[tuple[float, float]]]] = None) -> None:
+        if priors is not None:
+            if isinstance(priors, tuple):
+                assert len(priors) == 2
+                self.lambs_posterior_params = [priors for _ in range(self.num_points)]
+            elif isinstance(priors, list):
+                assert all(len(p) == 2 for p in priors)
+                self.lambs_posterior_params = [p for p in priors]
+            else:
+                raise ValueError("Priors must be tuple of length 2 or list of tuples of length 2.")
+        else:
+            self.lambs_posterior_params = [(1, 1) for _ in range(self.num_points)]
+
+    def thompson_sample(self, epsilon) -> list[tuple[int, float]]:
+        """
+        Does a thompson sample:
+        - samples rewards based on current posterior
+        - applies greedy solver to get route
+        - sample rewards of nodes in route
+        - return nodes and samples
+
+        In essence we sample a route and a return (sort of like a MAB sample).
+        """
+
+        if len(self.lambs_posterior_params) != self.num_points:
+            raise ValueError("Priors not correctly initialized. Call init_priors prior to this method.")
+
+        # thompson sample node EVs based on current param posteriors
+        thomps_rewards = [gamma(alpha, scale=1/beta) for alpha, beta in self.lambs_posterior_params]
+
+        # run orienteering solver
+        route, ret = greedy_solver(
+            self.dist, thomps_rewards, start=self.start, time_window=self.time_window, epsilon=epsilon
+        )
+
+        # sample and save
+        route_info = []
+        for node in route:
+            # sample rewards from true distribution of nodes visited in the route
+            reward_sample = poisson(lam=self.true_lambdas[node])
+            route_info.append((node, reward_sample))
+
+        return route_info
+
+    def thompson_update(self, route_info: list[tuple[int, float]]) -> None:
+        """Performs a thompson update of the posteriors based on sampled rewards of nodes in the route"""
+        for node, reward_sample in route_info:
+            # update posterior params given the reward samples
+            alpha, beta = self.lambs_posterior_params[node]
+            alpha += reward_sample
+            beta += 1
+            self.lambs_posterior_params[node] = (alpha, beta)
+
+    def ev_route(self):
+        return greedy_solver(self.dist, self.true_lambdas, start=self.start, time_window=self.time_window)
+
+    def ev_estimate(self) -> np.array:
+        """Returns the current estimates of the lambdas of each node"""
+        return np.array([alpha / beta for alpha, beta in self.lambs_posterior_params])
+
+
 if __name__ == "__main__":
+    np.random.seed(9582735)
+    random.seed(43875634)
+
     num_nodes = 20
     dist = random_graph(num_nodes)
     time_window = 15
@@ -178,50 +262,3 @@ if __name__ == "__main__":
     final_route, final_ret = greedy_solver(dist, est_lambs_days[-1], start=0, time_window=time_window)
     print(opt_ret, final_ret)
     regret = opt_ret - returns
-
-
-class RouteLearner:
-    """
-    Essentially above but easier to track intermediate variable values to plot etc...
-    """
-
-    def __init__(self, dist, prior: tuple[float, float], true_lambdas: np.array, time_window: float):
-        self.dist: np.array = dist
-
-        self.true_lambdas: np.array = true_lambdas
-        self.lambs_posterior_params: list[tuple[float, float]] = []
-
-        self.time_window = time_window
-        self.start = 0
-
-    def init_priors(self):
-        raise NotImplementedError
-
-    def thompson_step(self, epsilon) -> list[tuple[int, float]]:
-        # thompson sample node EVs based on current param posteriors
-        thomps_rewards = [gamma(alpha, scale=1/beta) for alpha, beta in self.lambs_posterior_params]
-
-        # run orienteering solver
-        route, ret = greedy_solver(
-            self.dist, thomps_rewards, start=self.start, time_window=self.time_window, epsilon=epsilon
-        )
-
-        # sample and save
-        route_info = []
-        for node in route:
-            # sample rewards from true distribution of nodes visited in the route
-            reward_sample = poisson(lam=self.true_lambdas[node])
-            route_info.append((node, reward_sample))
-
-        return route_info
-
-    def thompson_update(self, route_info: list[tuple[int, float]]) -> None:
-        for node, reward_sample in route_info:
-            # update posterior params given the reward samples
-            alpha, beta = self.lambs_posterior_params[node]
-            alpha += reward_sample
-            beta += 1
-            self.lambs_posterior_params[node] = (alpha, beta)
-
-    def ev_estimate(self):
-        return [alpha / beta for alpha, beta in self.lambs_posterior_params]
