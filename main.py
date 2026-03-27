@@ -2,6 +2,7 @@ import numpy as np
 from scipy.spatial.distance import pdist, squareform
 from numpy.random import gamma, poisson
 import random
+from typing import Optional
 
 np.random.seed(9582735)
 random.seed(43875634)
@@ -153,27 +154,74 @@ def main(dist: np.array, node_params: np.array, time_window: float, num_days: in
     return est_post_params, route_days, params_days
 
 
-num_nodes = 20
-dist = random_graph(num_nodes)
-time_window = 15
-num_days = 200
-true_lambdas = np.random.lognormal(mean=2, sigma=1, size=num_nodes)
-print(f"True lambdas: {true_lambdas.tolist()}")
+if __name__ == "__main__":
+    num_nodes = 20
+    dist = random_graph(num_nodes)
+    time_window = 15
+    num_days = 200
+    true_lambdas = np.random.lognormal(mean=2, sigma=1, size=num_nodes)
+    print(f"True lambdas: {true_lambdas.tolist()}")
 
-gamma_params, route_days, params_days = main(dist, true_lambdas, time_window, num_days, epsilon=0.05)
+    gamma_params, route_days, params_days = main(dist, true_lambdas, time_window, num_days, epsilon=0.05)
 
-est_lambs = [alpha/beta for alpha, beta in gamma_params]
-print(f"Estimated lambdas: {est_lambs}")
-optimal_route, opt_ret = greedy_solver(dist, true_lambdas, start=0, time_window=time_window)
-print()
-# print(optimal_route, opt_ret)
-est_lambs_days = np.array([[alpha/beta for alpha, beta in day_param] for day_param in params_days])
-print(np.mean(true_lambdas[None,] - est_lambs_days))
-print(route_days[-5:])
-print()
+    est_lambs = [alpha/beta for alpha, beta in gamma_params]
+    print(f"Estimated lambdas: {est_lambs}")
+    optimal_route, opt_ret = greedy_solver(dist, true_lambdas, start=0, time_window=time_window)
+    print()
+    # print(optimal_route, opt_ret)
+    est_lambs_days = np.array([[alpha/beta for alpha, beta in day_param] for day_param in params_days])
+    print(np.mean(true_lambdas[None,] - est_lambs_days))
+    print(route_days[-5:])
+    print()
 
-returns = np.array([sum([true_lambdas[node] for node in route]) for route in route_days])
-final_route, final_ret = greedy_solver(dist, est_lambs_days[-1], start=0, time_window=time_window)
-print(opt_ret, final_ret)
-regret = opt_ret - returns
+    returns = np.array([sum([true_lambdas[node] for node in route]) for route in route_days])
+    final_route, final_ret = greedy_solver(dist, est_lambs_days[-1], start=0, time_window=time_window)
+    print(opt_ret, final_ret)
+    regret = opt_ret - returns
 
+
+class RouteLearner:
+    """
+    Essentially above but easier to track intermediate variable values to plot etc...
+    """
+
+    def __init__(self, dist, prior: tuple[float, float], true_lambdas: np.array, time_window: float):
+        self.dist: np.array = dist
+
+        self.true_lambdas: np.array = true_lambdas
+        self.lambs_posterior_params: list[tuple[float, float]] = []
+
+        self.time_window = time_window
+        self.start = 0
+
+    def init_priors(self):
+        raise NotImplementedError
+
+    def thompson_step(self, epsilon) -> list[tuple[int, float]]:
+        # thompson sample node EVs based on current param posteriors
+        thomps_rewards = [gamma(alpha, scale=1/beta) for alpha, beta in self.lambs_posterior_params]
+
+        # run orienteering solver
+        route, ret = greedy_solver(
+            self.dist, thomps_rewards, start=self.start, time_window=self.time_window, epsilon=epsilon
+        )
+
+        # sample and save
+        route_info = []
+        for node in route:
+            # sample rewards from true distribution of nodes visited in the route
+            reward_sample = poisson(lam=self.true_lambdas[node])
+            route_info.append((node, reward_sample))
+
+        return route_info
+
+    def thompson_update(self, route_info: list[tuple[int, float]]) -> None:
+        for node, reward_sample in route_info:
+            # update posterior params given the reward samples
+            alpha, beta = self.lambs_posterior_params[node]
+            alpha += reward_sample
+            beta += 1
+            self.lambs_posterior_params[node] = (alpha, beta)
+
+    def ev_estimate(self):
+        return [alpha / beta for alpha, beta in self.lambs_posterior_params]
