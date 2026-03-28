@@ -255,6 +255,7 @@ class RouteLearner:
         ev_route, ev_ret = greedy_solver(
             self.dist, self.ev_estimate(), start=self.start, time_window=self.time_window
         )
+        ev_ret = self.route_ev_return(ev_route)
         return ev_route, ev_ret
 
     def ev_estimate(self) -> np.array:
